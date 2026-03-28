@@ -1,63 +1,272 @@
-# Introduction
+# Text Protocol Server
 
-This is a skeleton application using the Hyperf framework. This application is meant to be used as a starting place for those looking to get their feet wet with Hyperf Framework.
+> 基于 Hyperf 框架的 TCP 文本协议服务器，支持多种命令处理和编码自动转换
 
-# Requirements
+## 项目简介
 
-Hyperf has some requirements for the system environment, it can only run under Linux and Mac environment, but due to the development of Docker virtualization technology, Docker for Windows can also be used as the running environment under Windows.
+Text Protocol Server 是一个运行在 Swoole 协程之上的 TCP 服务器，采用文本协议与客户端通信。它提供以下核心功能：
 
-The various versions of Dockerfile have been prepared for you in the [hyperf/hyperf-docker](https://github.com/hyperf/hyperf-docker) project, or directly based on the already built [hyperf/hyperf](https://hub.docker.com/r/hyperf/hyperf) Image to run.
+- **数学运算**: 乘法、除法、自增
+- **树形结构转换**: 将扁平化的分类数据转换为层级树结构
+- **编码自动转换**: 支持 GBK/GB2312/GB18030 等中文编码自动转换为 UTF-8
 
-When you don't want to use Docker as the basis for your running environment, you need to make sure that your operating environment meets the following requirements:  
+## 技术栈
 
- - PHP >= 8.1
- - Any of the following network engines
-   - Swoole PHP extension >= 5.0，with `swoole.use_shortname` set to `Off` in your `php.ini`
-   - Swow PHP extension >= 1.3
- - JSON PHP extension
- - Pcntl PHP extension
- - OpenSSL PHP extension （If you need to use the HTTPS）
- - PDO PHP extension （If you need to use the MySQL Client）
- - Redis PHP extension （If you need to use the Redis Client）
- - Protobuf PHP extension （If you need to use the gRPC Server or Client）
+| 技术 | 版本 | 说明 |
+|------|------|------|
+| PHP | >= 8.1 | 运行环境 |
+| Swoole | >= 5.0 | 协程扩展 |
+| Hyperf | ~3.1.0 | PHP 协程框架 |
+| Docker | - | 容器化部署 |
 
-# Installation using Composer
+## 快速开始
 
-The easiest way to create a new Hyperf project is to use [Composer](https://getcomposer.org/). If you don't have it already installed, then please install as per [the documentation](https://getcomposer.org/download/).
+### 环境要求
 
-To create your new Hyperf project:
+- PHP >= 8.1
+- Swoole PHP 扩展 >= 5.0（需在 php.ini 中设置 `swoole.use_short_name = Off`）
+- Composer
 
-```bash
-composer create-project hyperf/hyperf-skeleton path/to/install
-```
-
-If your development environment is based on Docker you can use the official Composer image to create a new Hyperf project:
+### 本地开发
 
 ```bash
-docker run --rm -it -v $(pwd):/app composer create-project --ignore-platform-reqs hyperf/hyperf-skeleton path/to/install
-```
+# 1. 安装依赖
+composer install
 
-# Getting started
-
-Once installed, you can run the server immediately using the command below.
-
-```bash
-cd path/to/install
+# 2. 启动 HTTP 服务器（端口 8765）
 php bin/hyperf.php start
+
+# 或使用异步启动
+php bin/hyperf.php start -d
 ```
 
-Or if in a Docker based environment you can use the `docker-compose.yml` provided by the template:
+### Docker 部署
 
 ```bash
-cd path/to/install
-docker-compose up
+# 构建并启动容器
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
 ```
 
-This will start the cli-server on port `9501`, and bind it to all network interfaces. You can then visit the site at `http://localhost:9501/` which will bring up Hyperf default home page.
+## 架构设计
 
-## Hints
+### 整体架构
 
-- A nice tip is to rename `hyperf-skeleton` of files like `composer.json` and `docker-compose.yml` to your actual project name.
-- Take a look at `config/routes.php` and `app/Controller/IndexController.php` to see an example of a HTTP entrypoint.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Text Protocol Server                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
+│  │  TcpServer   │───▶│ Command      │───▶│   Commands   │  │
+│  │  (TCP 端口)   │    │  Handler     │    │  (mul/div/   │  │
+│  │              │    │              │    │   incr/      │  │
+│  │              │    │              │    │  conv_tree)  │  │
+│  └──────────────┘    └──────────────┘    └──────────────┘  │
+│         │                   │                                  │
+│         │            ┌──────┴──────┐                          │
+│         │            │  Contract   │                          │
+│         │            │ (Interface) │                          │
+│         │            └─────────────┘                          │
+│         │                                                     │
+│  ┌──────┴──────┐                                              │
+│  │   Swoole    │                                              │
+│  │   Server    │                                              │
+│  └─────────────┘                                              │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
-**Remember:** you can always replace the contents of this README.md file to something that fits your project description.
+### 核心组件
+
+#### 1. TcpServer (`app/Server/TcpServer.php`)
+
+TCP 服务器核心类，负责：
+- 客户端连接管理
+- 数据接收与缓冲区处理
+- 命令解析与分发
+- 编码自动转换
+
+```
+客户端连接 → onConnect → 发送欢迎信息
+     │
+     ▼
+接收数据 → onReceive → 缓冲区处理 → 按行分割 → processLine
+     │
+     ▼
+命令解析 → CommandHandler.execute() → 返回结果 → 发送响应
+     │
+     ▼
+客户端关闭 → onClose → 清理缓冲区
+```
+
+#### 2. CommandHandler (`app/Command/CommandHandler.php`)
+
+命令处理器，采用**策略模式**处理各种命令：
+
+| 命令 | 功能 | 示例 |
+|------|------|------|
+| `mul` | 乘法运算 | `mul 10 5` → `Result: 50.00` |
+| `div` | 除法运算 | `div 100 4` → `Result: 25.00` |
+| `incr` | 自增运算 | `incr 99` → `Result: 100` |
+| `conv_tree` | 树形转换 | `conv_tree [{"namePath":"a,b,c","id":1}]` |
+
+#### 3. ConvTreeCommand (`app/Command/ConvTreeCommand.php`)
+
+树形结构转换器，将扁平化的分类数据转换为层级树：
+
+**输入格式：**
+```json
+[
+  {"namePath": "电子产品,手机,iPhone", "id": 1},
+  {"namePath": "电子产品,电脑,MacBook", "id": 2}
+]
+```
+
+**输出格式：**
+```json
+[
+  {
+    "name": "电子产品",
+    "level": 1,
+    "children": [
+      {
+        "name": "手机",
+        "level": 2,
+        "children": [
+          {"name": "iPhone", "level": 3, "id": 1}
+        ]
+      }
+    ]
+  }
+]
+```
+
+#### 4. 接口设计
+
+项目采用**依赖倒置原则**，定义清晰的接口：
+
+- `CommandHandlerInterface`: 命令处理器接口
+- `JsonFormatterInterface`: JSON 格式化接口
+
+### 设计模式应用
+
+| 模式 | 应用位置 | 说明 |
+|------|----------|------|
+| 策略模式 | CommandHandler | 根据命令类型选择处理策略 |
+| 依赖注入 | 构造函数 | 通过容器注入依赖 |
+| 单一职责 | 各类 | 每个类只负责一项功能 |
+| 接口隔离 | Contract 目录 | 定义最小化接口 |
+
+## 配置说明
+
+### 环境变量 (.env)
+
+```env
+APP_NAME=skeleton
+APP_ENV=dev
+
+# 数据库配置
+DB_DRIVER=mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=hyperf
+DB_USERNAME=root
+DB_PASSWORD=
+
+# Redis 配置
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+### 服务器配置 (config/autoload/server.php)
+
+- **HTTP 服务器**: 端口 8765
+- **工作进程数**: CPU 核心数
+- **最大协程数**: 100000
+- **启用 HTTP/2**: 是
+
+## 客户端连接示例
+
+```bash
+# 使用 telnet 连接
+telnet localhost 8765
+
+# 或使用 netcat
+nc localhost 8765
+
+# 发送命令
+mul 10 20
+div 100 4
+incr 5
+conv_tree [{"namePath":"a,b,c","id":1}]
+```
+
+## 项目结构
+
+```
+text-protocol-server/
+├── app/
+│   ├── Command/          # 命令处理
+│   │   ├── CommandHandler.php
+│   │   ├── ConvTreeCommand.php
+│   │   ├── DefaultJsonFormatter.php
+│   │   └── TreeNode.php
+│   ├── Contract/         # 接口定义
+│   │   ├── CommandHandlerInterface.php
+│   │   └── JsonFormatterInterface.php
+│   ├── Controller/       # HTTP 控制器
+│   ├── Exception/        # 异常处理
+│   ├── Listener/         # 事件监听
+│   ├── Model/            # 数据模型
+│   └── Server/           # TCP 服务器
+│       └── TcpServer.php
+├── config/               # 配置文件
+├── bin/                  # 入口脚本
+├── runtime/              # 运行时文件
+├── Dockerfile            # 生产镜像
+├── docker-compose.yml    # Docker 编排
+└── composer.json         # 依赖管理
+```
+
+## 扩展开发
+
+### 添加新命令
+
+1. 在 `app/Command/` 目录创建新的命令类
+2. 在 `CommandHandler.php` 的 `execute` 方法中添加匹配逻辑
+
+```php
+protected function handleNewCommand(array $params): string
+{
+    // 实现你的命令逻辑
+    return "Result: ...";
+}
+```
+
+### 修改 TCP 端口
+
+编辑 `config/autoload/server.php` 中的端口配置：
+
+```php
+'servers' => [
+    [
+        'name' => 'http',
+        'port' => 9502,  // 修改为其他端口
+        // ...
+    ],
+],
+```
+
+## 性能优化
+
+- 使用 Swoole 协程并发处理请求
+- 启用 HTTP/2 协议支持
+- 配置 `enable_request_lifecycle: false` 减少开销
+- 调优 `worker_num` 匹配 CPU 核心数
+
+## 许可证
+
+[Apache-2.0](LICENSE)
